@@ -1,0 +1,8 @@
+name: study-reminder
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - PySide6==6.11.2

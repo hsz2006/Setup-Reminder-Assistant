@@ -1,0 +1,6 @@
+data/
+.runtime/
+config/ai.json
+__pycache__/
+*.pyc
+tmp/
