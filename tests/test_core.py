@@ -127,9 +127,11 @@ class PersistenceTests(unittest.TestCase):
         self.assertFalse(Store(self.path / 'test.sqlite3').claim('one'))
 
     def test_ai_disabled_makes_no_request(self):
+        config = self.path / 'disabled-ai.json'
+        config.write_text(json.dumps({'enabled': False}), encoding='utf-8')
         with patch('urllib.request.urlopen') as request:
             with self.assertRaises(ValueError):
-                AI(self.store).ask('写一个任务')
+                AI(self.store, config).ask('写一个任务')
             request.assert_not_called()
 
     def test_ai_draft_requires_explicit_save(self):

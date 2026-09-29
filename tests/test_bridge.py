@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
+import time
 from pathlib import Path
 from reminder.storage import Store
 from reminder.focus import Focus
@@ -51,6 +52,73 @@ class BridgeTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.post('/status', {}, token='incorrect')
         self.assertEqual(caught.exception.code, 401)
+
+    def test_activity_is_authenticated_and_independent_of_focus_sync(self):
+        payload = {'browser': 'Chrome', 'focused': True, 'bilibili': True, 'video': ''}
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post('/activity', payload, token='incorrect')
+        self.assertEqual(caught.exception.code, 401)
+        self.assertTrue(self.post('/activity', payload)['ok'])
+        self.assertEqual(self.bridge.status(), {})
+        self.assertTrue(self.bridge.usage.clients['Chrome']['bilibili'])
+        self.store.set('meeting_mode', True)
+        self.bridge.usage.seconds = 100
+        self.post('/activity', payload)
+        self.assertEqual(self.bridge.usage.seconds, 0)
+
+    def test_automatic_focus_without_two_online_clients_and_late_sync(self):
+        now = time.time()
+        self.store.set('allow_draft', 'BV1234567890')
+        self.post('/sync', {'browser': 'Edge'})
+        self.assertFalse(self.bridge.ready())
+        self.bridge.usage.last = now
+        self.bridge.usage.last_bili = now
+        self.bridge.usage.seconds = 1800
+        self.assertEqual(self.bridge.usage_action(now), 'bili_lock')
+        current = self.bridge.focus.bili_lock(now)
+        self.assertFalse(self.bridge.focus.current(now))
+        self.assertGreater(current['end'], now)
+        self.assertEqual(current['allow'], ['BV1234567890'])
+        self.assertEqual(self.bridge.usage.seconds, 0)
+        self.assertTrue(self.bridge.changed.is_set())
+        self.assertEqual(self.post('/sync', {'browser': 'Chrome'})['focus'], current)
+        self.assertIsNone(self.bridge.usage_action(now + 1))
+        self.assertEqual(self.bridge.focus.bili_lock(now + 1)['id'], current['id'])
+        self.assertIsNone(self.bridge.usage_action(now + 2401))
+        self.assertEqual(self.bridge.usage.seconds, 0)
+
+    def test_push_allowlist_merges_and_deduplicates(self):
+        self.store.set('allow_draft', 'BV1234567890')
+        pushed = self.post('/allow', {'browser': 'Chrome', 'videos': ['BV0987654321', 'BV1234567890']})
+        self.assertEqual(pushed['added'], 1)
+        self.assertEqual(pushed['total'], 2)
+        self.assertEqual(self.store.get('allow_draft'), 'BV1234567890\nBV0987654321')
+        again = self.post('/allow', {'browser': 'Edge', 'videos': ['BV0987654321']})
+        self.assertEqual(again['added'], 0)
+        self.assertEqual(again['total'], 2)
+
+    def test_push_allowlist_rejected_during_focus_and_invalid_input(self):
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post('/allow', {'browser': 'Chrome', 'videos': ['BV1234567890']}, token='incorrect')
+        self.assertEqual(caught.exception.code, 401)
+        self.bridge.focus.start(1, 'BV1234567890')
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post('/allow', {'browser': 'Chrome', 'videos': ['BV0987654321']})
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(self.store.get('allow_draft'), None)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post('/allow', {'browser': 'Chrome', 'videos': 'not-a-list'})
+        self.assertEqual(caught.exception.code, 400)
+
+    def test_automatic_focus_empty_allowlist_and_paused_states(self):
+        now = time.time()
+        for meeting, locked in ((True, False), (False, True), (False, False)):
+            self.store.set('meeting_mode', meeting)
+            self.bridge.usage.last = self.bridge.usage.last_bili = now
+            self.bridge.usage.seconds = 1800
+            result = self.bridge.usage_action(now, locked)
+            self.assertEqual(result, None if meeting or locked else 'bili_lock')
+        self.assertEqual(self.bridge.focus.bili_lock(now)['allow'], [])
 
 
 if __name__ == '__main__':

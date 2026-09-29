@@ -12,12 +12,13 @@ STYLE = '''
 QWidget { color: #443F35; font-family: 'Microsoft YaHei UI'; font-size: 13px; }
 QMainWindow, QDialog { background: #DDD1BD; }
 QWidget#dashboard { background: #DDD1BD; }
-QFrame#card { background: #EDE3D3; border: 1px solid #D7CAB5; border-radius: 18px; }
+QFrame#card { background: #EDE3D3; border: 1px solid #E4D8C5; border-top-color: #F5ECDD; border-bottom-color: #D6CAB7; border-radius: 18px; }
 QFrame#hero { background: #E3DBC7; border: 1px solid #CEC9B1; border-radius: 14px; }
 QFrame#taskRow { background: #E9DFCE; border: 1px solid #DED2BF; border-radius: 12px; }
 QLabel { background: transparent; border: none; }
 QLabel#title { font-size: 30px; font-weight: 650; color: #3D392F; }
 QLabel#section { font-size: 18px; font-weight: 600; }
+QLabel#biliWarning { color: #B43F36; font-size: 16px; font-weight: 600; }
 QLabel#heroText { font-size: 22px; font-weight: 600; }
 QLabel#muted { color: #7B7566; }
 QLabel#date { font-size: 14px; color: #7B7566; }
@@ -52,6 +53,10 @@ QMenu::item:selected { background: #D6DCC7; }
 QTabWidget::pane { background: #EDE3D3; border: 1px solid #D2C7B3; border-radius: 12px; padding: 12px; }
 QTabBar::tab { background: #DCD2C0; padding: 10px 20px; margin-right: 4px; border-top-left-radius: 9px; border-top-right-radius: 9px; }
 QTabBar::tab:selected { background: #EDE3D3; color: #56644B; }
+QTableView#improvementTodo { background: #F0E7D7; alternate-background-color: #EDE3D3; border: 1px solid #CFC3AF; gridline-color: #D6CBB9; selection-background-color: #D6DCC7; selection-color: #443F35; }
+QTableView#improvementTodo::item { padding: 9px; }
+QTableView#improvementTodo QLineEdit { padding: 1px 6px; border-radius: 4px; color: #443F35; background: #F0E7D7; }
+QTableView#improvementTodo QHeaderView::section { background: #E5DBC8; color: #443F35; border: none; padding: 9px; }
 QToolTip { background: #EDE3D3; color: #443F35; border: 1px solid #CFC3AF; padding: 6px; }
 '''
 

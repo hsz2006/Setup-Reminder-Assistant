@@ -50,6 +50,26 @@ class SessionTests(unittest.TestCase):
         self.session.set_meeting(False, self.now + timedelta(minutes=2))
         self.assertEqual(self.focus.current(self.now.timestamp() + 120), state)
 
+    def test_snooze_persists_and_fires_once_at_deadline(self):
+        self.store.set('snooze_end', self.now.timestamp() + 300)
+        again = Session(self.store, self.focus, load_config(), self.now)
+        self.assertIsNone(again.poll(self.now + timedelta(seconds=299)))
+        self.assertEqual(again.poll(self.now + timedelta(seconds=300)), ('', '暂缓时间到了'))
+        self.assertIsNone(again.poll(self.now + timedelta(seconds=301)))
+
+    def test_snooze_waits_for_unlock(self):
+        self.store.set('snooze_end', self.now.timestamp() + 300)
+        self.assertIsNone(self.session.poll(self.now + timedelta(seconds=310), locked=True))
+        self.assertEqual(self.session.poll(self.now + timedelta(seconds=320)), ('', '暂缓时间到了'))
+
+    def test_meeting_consumes_snooze_without_catchup(self):
+        self.store.set('snooze_end', self.now.timestamp() + 300)
+        self.session.set_meeting(True, self.now)
+        later = self.now + timedelta(seconds=310)
+        self.session.set_meeting(False, later)
+        self.assertEqual(self.store.get('snooze_end'), 0)
+        self.assertIsNone(self.session.poll(later + timedelta(seconds=1)))
+
     def test_agenda_uses_actual_courses_and_fixed_times(self):
         items = day_agenda(datetime(2026, 9, 15).date(), load_config())
         names = [item['name'] for item in items]

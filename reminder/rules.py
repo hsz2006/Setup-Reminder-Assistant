@@ -1,4 +1,5 @@
 import json
+import random
 from datetime import date, datetime
 from .storage import ROOT
 
@@ -95,6 +96,47 @@ def next_action(now, cfg, tasks, offset=0):
     if pool:
         return pool[seed % len(pool)], None
     return default or '打开书，先看一小段。随时可以停下。', None
+
+
+def light_actions(now, cfg, context=''):
+    """Use explicit task context first, then the currently scheduled activity."""
+    lower = context.lower()
+    if any(word in lower for word in ('代码', 'matlab', 'python', '编程', 'debug')):
+        group = 'code'
+    elif any(word in lower for word in ('论文', '文献', 'paper')):
+        group = 'paper'
+    elif any(word in lower for word in ('科研', '实验', '仿真')):
+        group = 'research'
+    elif any(word in lower for word in ('课', '书', '讲义', '图论', '作业', '题', '笔记')):
+        group = 'study'
+    else:
+        current = [item for item in day_agenda(now.date(), cfg)
+                   if item['start'] <= now.strftime('%H:%M') < item['end']]
+        group = 'research' if any(item['name'] == '科研' for item in current) else 'study'
+    pool = cfg.get('generic_pool', [])
+    indexes = cfg.get('light_action_contexts', {}).get(group, range(len(pool)))
+    choices = [pool[i] for i in indexes if isinstance(i, int) and 0 <= i < len(pool)]
+    return list(dict.fromkeys(choices or pool or ['打开手边正在学的书，只读一句。']))
+
+
+def switch_action(now, cfg, tasks, current, context='', rng=None):
+    """Equal category probability when both have alternatives; never repeat text."""
+    rng = rng or random
+    task_choices = list({t['text']: (t['text'], t['id']) for t in tasks
+                         if t['text'].strip() and t['text'].strip() != current.strip()}.values())
+    light_choices = [(text, None) for text in light_actions(now, cfg, context)
+                     if text.strip() != current.strip()]
+    if task_choices and light_choices:
+        choices = task_choices if rng.random() < 0.5 else light_choices
+    else:
+        choices = task_choices or light_choices
+    if not choices:
+        # Even a user-edited pool with one repeated item must visibly change.
+        fallback = '把正在学的讲义翻到上次停下的位置。'
+        if fallback == current.strip():
+            fallback = '打开手边正在学的书，只读一句。'
+        return fallback, None
+    return rng.choice(choices)
 
 
 def day_agenda(day, cfg):

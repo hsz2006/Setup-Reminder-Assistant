@@ -30,6 +30,10 @@ class Session:
         if returned and not locked and ordinary_allowed(now, self.cfg) and stamp - self.last_return > 60:
             event = event or ('', '回到电脑前，先做一小步')
             self.last_return = stamp
+        snooze_end = self.store.get('snooze_end', 0)
+        if snooze_end and stamp >= snooze_end and (not locked or meeting):
+            self.store.set('snooze_end', 0)
+            event = event or ('', '暂缓时间到了')
         rest_end = self.store.get('rest_end', 0)
         if rest_end and stamp >= rest_end and (not locked or meeting):
             self.store.set('rest_end', 0)

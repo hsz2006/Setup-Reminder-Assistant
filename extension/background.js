@@ -1,9 +1,47 @@
 importScripts('policy.js');
+importScripts('activity.js');
 const endpoint = 'http://127.0.0.1:49573/sync';
 const browser = navigator.userAgent.includes('Edg/') ? 'Edge' : 'Chrome';
 let running = false;
 let lastApplied = null;
 let errorMessage = '';
+let activityRunning = false;
+let activityAgain = false;
+let activityError = '';
+
+async function reportActivity() {
+  if (activityRunning) { activityAgain = true; return; }
+  activityRunning = true;
+  try {
+    const {token} = await chrome.storage.local.get('token');
+    if (!token) return;
+    const windows = await chrome.windows.getAll({populate: true});
+    const response = await fetch('http://127.0.0.1:49573/activity', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token},
+      body: JSON.stringify({browser, ...BiliActivity.classify(windows)}),
+      signal: AbortSignal.timeout(3000)
+    });
+    if (!response.ok) throw new Error('计时上报失败 HTTP ' + response.status);
+    activityError = '';
+    await chrome.storage.local.set({activityStatus: '计时上报正常', activitySeen: Date.now()});
+  } catch (error) {
+    activityError = String(error.message || error);
+    await chrome.storage.local.set({activityStatus: activityError});
+  }
+  finally {
+    activityRunning = false;
+    if (activityAgain) { activityAgain = false; void reportActivity(); }
+  }
+}
+
+chrome.windows.onFocusChanged.addListener(() => void reportActivity());
+chrome.windows.onRemoved.addListener(() => void reportActivity());
+chrome.tabs.onActivated.addListener(() => void reportActivity());
+chrome.tabs.onRemoved.addListener(() => void reportActivity());
+chrome.tabs.onUpdated.addListener(() => void reportActivity());
+setInterval(reportActivity, 5000);
+void reportActivity();
 
 async function apply(focus) {
   const valid = FocusPolicy.active(focus) ? focus : {};
@@ -43,13 +81,15 @@ async function sync(wait = true) {
     const focus = FocusPolicy.active(stored.focus) ? stored.focus : {};
     const response = await fetch(endpoint, {
       method: 'POST', headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + stored.token},
-      body: JSON.stringify({browser, id: focus.id || '', error: errorMessage, wait}),
+      body: JSON.stringify({browser, id: focus.id || '', error: errorMessage, wait,
+        version: chrome.runtime.getManifest().version, activity_error: activityError}),
       signal: AbortSignal.timeout(25000)
     });
     if (!response.ok) throw new Error(response.status === 401 ? '配对码不正确。' : '连接失败：' + response.status);
     const data = await response.json();
     // A lost/replaced desktop database must not end an already active local session.
-    const next = FocusPolicy.active(focus) ? focus : (data.focus || {});
+    const remote = data.focus || {};
+    const next = FocusPolicy.active(focus) && focus.end >= (remote.end || 0) ? focus : remote;
     await apply(next);
     errorMessage = '';
     await chrome.storage.local.set({connection: '已连接 ' + browser, seen: Date.now()});
@@ -64,11 +104,26 @@ async function sync(wait = true) {
   }
 }
 
+async function pushAllow(videos) {
+  const {token} = await chrome.storage.local.get('token');
+  if (!token) throw new Error('请先保存配对码。');
+  const response = await fetch('http://127.0.0.1:49573/allow', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token},
+    body: JSON.stringify({browser, videos}),
+    signal: AbortSignal.timeout(5000)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || '连接失败：' + response.status);
+  return data;
+}
+
 async function loop() {
   await sync(true);
   setTimeout(loop, 1200);
 }
 chrome.alarms.onAlarm.addListener(async alarm => {
+  void reportActivity();
   if (alarm.name === 'focus-end') {
     const stored = await chrome.storage.local.get('focus');
     if (!FocusPolicy.active(stored.focus)) await apply({});
@@ -84,6 +139,12 @@ chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'sync') {
     sync(false).then(() => sendResponse({ok: true}));
+    return true;
+  }
+  if (message.type === 'allow') {
+    pushAllow(message.videos).then(
+      data => sendResponse({ok: true, ...data}),
+      error => sendResponse({ok: false, error: String(error.message || error)}));
     return true;
   }
 });

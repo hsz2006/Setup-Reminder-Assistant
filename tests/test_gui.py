@@ -36,6 +36,57 @@ class GuiTests(unittest.TestCase):
             self.assertTrue(card.isVisible())
         self.assertEqual(self.app.root.centralWidget().objectName(), 'dashboard')
 
+    def test_focus_allowlist_is_read_only_video_page(self):
+        from PySide6.QtWidgets import QTextEdit, QPushButton
+        from reminder.allowed_videos import AllowedVideos
+        self.store.set('video_titles', {'BV1234567890': '测试课程'})
+        self.app.focus.start(40, 'BV1234567890')
+        self.store.set('allow_draft', '')
+        self.app.edit_allowlist()
+        page = self.app.allow_dialog.findChild(AllowedVideos)
+        self.assertIsNotNone(page)
+        self.assertEqual(page.labels['BV1234567890'].text(), '测试课程')
+        self.assertIsNone(self.app.allow_dialog.findChild(QTextEdit))
+        self.assertEqual([b.text() for b in page.findChildren(QPushButton)], ['Edge 打开'])
+        self.app.refresh()
+        self.assertIn('1', self.app.allow_button.text())
+        self.app.allow_dialog.reject()
+        self.assertTrue(page.stopped.is_set())
+
+    def test_bili_lock_keeps_reminders_and_personal_focus_independent(self):
+        import time
+        now = time.time()
+        self.app.clock = lambda: datetime.fromtimestamp(now)
+        popup = self.app.remind(bili=True)
+        self.app.bridge.usage.last = self.app.bridge.usage.last_bili = now
+        self.app.bridge.usage.seconds = 1800
+        self.app.tick()
+        self.assertTrue(popup.isVisible())
+        self.assertFalse(self.app.focus.current(now))
+        current = self.app.focus.bili_lock(now)
+        self.assertGreater(current['end'], now)
+        self.assertEqual(current['allow'], [])
+        self.assertTrue(self.app.start_button.isEnabled())
+        self.assertTrue(self.app.minutes.isEnabled())
+        self.assertIn('已锁定', self.app.status.text())
+        self.app.quit()
+        self.assertFalse(self.app.closed)
+        self.assertEqual(self.app.focus.bili_lock(now)['id'], current['id'])
+
+    def test_bili_warning_reuses_actions_and_does_not_start_focus(self):
+        from PySide6.QtWidgets import QLabel, QPushButton
+        from reminder.bili_usage import WARNING
+        popup = self.app.remind(bili=True)
+        self.assertEqual(popup.findChild(QLabel, 'biliWarning').text(), WARNING)
+        action = popup.findChild(QLabel, 'heroText')
+        previous = action.text()
+        next(b for b in popup.findChildren(QPushButton) if b.text() == '换一步').click()
+        self.assertNotEqual(action.text(), previous)
+        self.assertEqual(self.store.get('bili_last_action'), action.text())
+        self.assertFalse(self.app.focus.current())
+        next(b for b in popup.findChildren(QPushButton) if b.text() == '暂缓 5 分钟').click()
+        self.assertFalse(popup.isVisible())
+
     def test_close_hides_without_stopping_background(self):
         self.app.show()
         self.app.root.close()
@@ -80,6 +131,33 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.app.hotkeys.bindings, previous)
         with self.assertRaises(ValueError):
             parse_hotkey('N')
+
+    def test_switch_single_task_changes_without_completing_it(self):
+        from PySide6.QtWidgets import QLabel, QPushButton
+        self.store.add_tasks(['阅读MATLAB仿真代码'])
+        popup = self.app.remind()
+        action = popup.findChild(QLabel, 'heroText')
+        self.assertEqual(action.text(), '阅读MATLAB仿真代码')
+        switch = next(b for b in popup.findChildren(QPushButton) if b.text() == '换一步')
+        for _ in range(12):
+            previous = action.text()
+            switch.click()
+            self.assertNotEqual(action.text(), previous)
+        self.assertEqual(len(self.store.tasks()), 1)
+        self.assertFalse(self.app.focus.current())
+        labels = [item.text() for item in popup.findChildren(QLabel)]
+        self.assertIn('做到这一步就可以停下。是否继续，由你决定。', labels)
+        self.assertNotIn('打开书，看一小段就够了。想继续时再继续。', labels)
+
+    def test_snooze_closes_popup_sets_five_minutes_without_focus(self):
+        from PySide6.QtWidgets import QPushButton
+        popup = self.app.remind()
+        next(b for b in popup.findChildren(QPushButton) if b.text() == '暂缓 5 分钟').click()
+        self.assertFalse(popup.isVisible())
+        self.assertIsNone(self.app.popup)
+        self.assertEqual(self.store.get('snooze_end'), self.app.clock().timestamp() + 300)
+        self.assertFalse(self.app.focus.current())
+        self.assertFalse(self.store.get('rest_end', 0))
 
     def test_settings_has_editable_hotkeys(self):
         from PySide6.QtWidgets import QKeySequenceEdit

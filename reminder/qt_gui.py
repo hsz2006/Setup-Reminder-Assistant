@@ -7,12 +7,12 @@ import threading
 import time
 from datetime import datetime
 from PySide6.QtCore import Qt, QTimer, QSize, Signal, QObject
-from PySide6.QtGui import QAction, QFont, QFontDatabase, QKeySequence
+from PySide6.QtGui import QAction, QFont, QFontDatabase, QKeySequence, QColor
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QTextEdit, QScrollArea, QDialog,
-    QSpinBox, QComboBox, QMenu, QSystemTrayIcon, QKeySequenceEdit, QTabWidget, QSizePolicy)
+    QSpinBox, QComboBox, QMenu, QSystemTrayIcon, QKeySequenceEdit, QTabWidget, QSizePolicy, QGraphicsDropShadowEffect)
 from .storage import ROOT, Store
-from .rules import load_config, next_action, ordinary_allowed, day_agenda
+from .rules import load_config, next_action, ordinary_allowed, day_agenda, switch_action
 from .focus import Focus, normalize_links
 from .bridge import Bridge, PORT
 from .session import Session
@@ -20,6 +20,9 @@ from .hotkeys import Hotkeys, DEFAULTS
 from .theme import STYLE, app_icon
 from .ai import AI
 from .windows import listen
+from .todo import TodoPage
+from .bili_usage import WARNING as BILI_WARNING
+from .allowed_videos import AllowedVideos
 
 
 def label(text='', name=None, wrap=False):
@@ -43,6 +46,13 @@ def button(text, callback, name=None):
 def card(name='card', padding=22):
     frame = QFrame()
     frame.setObjectName(name)
+    if name == 'card':
+        # Static, low elevation on the three dashboard panels only.
+        shadow = QGraphicsDropShadowEffect(frame)
+        shadow.setBlurRadius(12)
+        shadow.setOffset(0, 3)
+        shadow.setColor(QColor(105, 86, 58, 42))
+        frame.setGraphicsEffect(shadow)
     layout = QVBoxLayout(frame)
     layout.setContentsMargins(padding, padding, padding, padding)
     layout.setSpacing(13)
@@ -261,6 +271,8 @@ class App:
         focus_layout.addLayout(controls)
         self.browser_label = label('', 'muted')
         focus_layout.addWidget(self.browser_label)
+        self.usage_label = label('', 'muted', True)
+        focus_layout.addWidget(self.usage_label)
         outer.addWidget(self.focus_card)
         footer = QHBoxLayout()
         self.status = label('后台运行中 · 关闭窗口收进托盘', 'muted', True)
@@ -433,7 +445,8 @@ class App:
                 self.agenda_rows.addWidget(label('今天接下来没有固定安排。\n可以按自己的节奏开始。', 'muted', True))
             self.agenda_rows.addStretch(1)
         try:
-            count = len(normalize_links(self.store.get('allow_draft', '')))
+            current = self.focus.blocking()
+            count = len(current['allow']) if current else len(normalize_links(self.store.get('allow_draft', '')))
             self.allow_button.setText(f'已允许 {count} 个视频  ›')
         except ValueError:
             self.allow_button.setText('检查允许列表  ›')
@@ -551,19 +564,30 @@ class App:
         self.present(win)
 
     def edit_allowlist(self):
+        current = self.focus.blocking()
+        if current:
+            if self.allow_dialog and self.allow_dialog.isVisible():
+                self.allow_dialog.reject()
+            win, layout = self.new_dialog('当前允许的视频', width=700)
+            self.allow_dialog = win
+            page = AllowedVideos(self.store, self.focus, current, self.notice, win)
+            layout.addWidget(page)
+            win.finished.connect(lambda result: page.stop())
+            self.present(win)
+            return
         win, layout = self.new_dialog('允许的视频与音乐', width=640)
         self.allow_dialog = win
         layout.addWidget(label('每行一个视频链接或 BV 号。\n课程合集在浏览器扩展中提取后，粘贴到这里。', wrap=True))
         text = QTextEdit()
         text.setPlainText(self.store.get('allow_draft', ''))
         layout.addWidget(text)
-        active = bool(self.focus.current())
+        active = bool(self.focus.blocking())
         text.setReadOnly(active)
         if active:
             layout.addWidget(label('专注期间允许列表不可修改。', 'muted'))
         def save():
-            if self.focus.current():
-                self.notice('专注进行中', '允许列表在专注结束后才能修改。')
+            if self.focus.blocking():
+                self.notice('网站限制进行中', '个人专注和 B 站锁定均结束后才能修改允许列表。')
                 return
             try:
                 normalize_links(text.toPlainText())
@@ -611,26 +635,34 @@ class App:
         else:
             self.remind('')
 
-    def remind(self, fixed='', title='先做一个小动作'):
+    def remind(self, fixed='', title='先做一个小动作', bili=False):
         if self.session.meeting or self.focus.current():
             return None
         if self.popup:
             self.popup.reject()
         win, layout = self.new_dialog('启动提醒助手', width=560, topmost=True)
         self.popup = win
+        if bili:
+            layout.addWidget(label(BILI_WARNING, 'biliWarning', True))
         layout.addWidget(label(title, 'section'))
         text = label('', 'heroText', True)
         text.setMinimumHeight(70)
         layout.addWidget(text)
-        offset = [0]
+        now = self.clock()
+        initial = fixed or next_action(now, self.cfg, self.store.tasks(now.date().isoformat()))[0]
+        if bili:
+            initial = switch_action(now, self.cfg, self.store.tasks(now.date().isoformat()),
+                                    self.store.get('bili_last_action', ''), context=initial)[0]
+            self.store.set('bili_last_action', initial)
+        text.setText(initial)
         def choose():
             now = self.clock()
-            text.setText(next_action(now, self.cfg, self.store.tasks(now.date().isoformat()), offset[0])[0])
-            offset[0] += 1
-        choose()
-        if fixed:
-            text.setText(fixed)
-        layout.addWidget(label('打开书，看一小段就够了。想继续时再继续。', 'muted', True))
+            candidate, _ = switch_action(now, self.cfg, self.store.tasks(now.date().isoformat()),
+                                         text.text(), context=initial)
+            text.setText(candidate)
+            if bili:
+                self.store.set('bili_last_action', candidate)
+        layout.addWidget(label('做到这一步就可以停下。是否继续，由你决定。', 'muted', True))
         row = QHBoxLayout()
         row.addWidget(button('我开始了', win.accept, 'primary'))
         row.addWidget(button('换一步', choose))
@@ -640,11 +672,19 @@ class App:
             win.accept()
             self.show()
             self.minutes.setFocus()
-        layout.addWidget(button('进入专注  ›', focus_entry, 'quiet'), alignment=Qt.AlignmentFlag.AlignRight)
+        footer = QHBoxLayout()
+        footer.addWidget(button('暂缓 5 分钟', lambda: self.snooze(win)))
+        footer.addStretch()
+        footer.addWidget(button('进入专注  ›', focus_entry, 'quiet'))
+        layout.addLayout(footer)
         win.finished.connect(lambda result: setattr(self, 'popup', None) if self.popup is win else None)
         self.present(win)
         self.log.info('Reminder displayed: %s', title)
         return win
+
+    def snooze(self, parent):
+        self.store.set('snooze_end', self.clock().timestamp() + 5 * 60)
+        parent.accept()
 
     def rest(self, parent):
         win, layout = self.new_dialog('休息一会', width=380, topmost=True)
@@ -746,6 +786,7 @@ class App:
         box.addWidget(button('退出后台程序…', self.quit))
         box.addWidget(button('打开使用说明', lambda: os.startfile(ROOT / 'README.md')))
         tabs.addTab(behavior, '后台与会议')
+        tabs.addTab(TodoPage(self.store), 'ToDo List')
         self.present(win)
 
     def login_reminder(self):
@@ -784,8 +825,16 @@ class App:
             if returned:
                 self.pending_return = False
             event = self.session.poll(now, self.locked, returned)
+            usage_action = self.bridge.usage_action(now.timestamp(), self.locked)
+            if usage_action == 'bili_lock':
+                QTimer.singleShot(1500, self.bridge.changed.clear)
+                self.status.setText('B 站累计停留已达 30 分钟，已锁定至次日早上 08:00。')
+                self.log.info('Bilibili locked until next day 08:00 after 30-minute usage threshold')
             if event:
                 self.remind(*event)
+            if usage_action == 'remind' and not self.popup:
+                if self.remind(bili=True):
+                    self.bridge.usage_delivered()
             current = self.focus.current()
             self.start_button.setEnabled(not current)
             self.minutes.setEnabled(not current)
@@ -808,7 +857,17 @@ class App:
                     text = '限制已同步' if client.get('id') == current['id'] else '正在同步…'
                 summaries.append(browser + ' · ' + text)
             self.browser_label.setText('    /    '.join(summaries))
-            self.bridge.desktop = {'framework': 'Qt', 'version': 2, 'meeting_mode': self.session.meeting,
+            bili_lock = self.focus.bili_lock()
+            if bili_lock:
+                self.usage_label.setText('B 站已锁定至 ' + datetime.fromtimestamp(bili_lock['end']).strftime('%m月%d日 08:00') + ' · 允许视频仍可播放')
+            else:
+                with self.bridge.usage_lock:
+                    seconds = int(self.bridge.usage.seconds)
+                    activity = dict(self.bridge.usage.clients)
+                observed = any(time.time() - value['seen'] < 12 for value in activity.values())
+                self.usage_label.setText(f'B 站本轮累计 {seconds // 60} 分 {seconds % 60} 秒 · 30 分钟后锁定' +
+                                        (' · 计时上报正常' if observed else ' · 未收到计时上报，请重新加载扩展 1.2.0'))
+            self.bridge.desktop = {'framework': 'Qt', 'version': 2, 'meeting_mode': self.session.meeting, 'locked': self.locked,
                                    'hotkeys': {key: value['text'] for key, value in self.hotkeys.bindings.items()},
                                    'tray_visible': bool(self.tray and self.tray.isVisible())}
             self.refresh()
@@ -817,12 +876,12 @@ class App:
             self.status.setText('运行出现错误，请查看 data/app.log。')
 
     def quit(self):
-        if self.focus.current():
-            self.notice('专注进行中', '结束前不能退出后台。可以关闭窗口或开启会议免打扰。')
+        if self.focus.blocking():
+            self.notice('网站限制进行中', '个人专注或 B 站锁定结束前不能退出后台。可以关闭窗口或开启会议免打扰。')
             return
         def exit_confirmed():
-            if self.focus.current():
-                self.notice('专注进行中', '专注结束前不能退出。')
+            if self.focus.blocking():
+                self.notice('网站限制进行中', '个人专注或 B 站锁定结束前不能退出。')
                 return
             self.shutdown()
             self.qt.quit()

@@ -1,6 +1,7 @@
 import re
 import time
 import uuid
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 
@@ -37,13 +38,35 @@ class Focus:
         state = self.store.get('focus', {})
         return state if state.get('end', 0) > now else {}
 
+    def bili_lock(self, now=None):
+        now = time.time() if now is None else now
+        state = self.store.get('bili_lock', {})
+        return state if state.get('end', 0) > now else {}
+
+    def blocking(self, now=None):
+        states = [state for state in (self.current(now), self.bili_lock(now)) if state]
+        return max(states, key=lambda state: state['end']) if states else {}
+
+    def lock_bili(self, now=None):
+        now = time.time() if now is None else now
+        if self.bili_lock(now):
+            return self.bili_lock(now)
+        # Choice B: even before 08:00, the deadline is TOMORROW at 08:00.
+        tomorrow = datetime.fromtimestamp(now).date() + timedelta(days=1)
+        end = datetime.combine(tomorrow, datetime.min.time()).replace(hour=8).timestamp()
+        state = {'id': uuid.uuid4().hex, 'end': end,
+                 'allow': normalize_links(self.store.get('allow_draft', '')), 'kind': 'bili_lock'}
+        self.store.set('bili_lock', state)
+        return state
+
     def start(self, minutes, links, now=None):
         now = time.time() if now is None else now
         if self.current(now):
             raise ValueError('专注尚未结束，不能修改或重新开始。')
         if not isinstance(minutes, int) or not 1 <= minutes <= 1440:
             raise ValueError('时长须为 1—1440 分钟的整数。')
-        allow = normalize_links(links)
+        locked = self.bili_lock(now)
+        allow = list(locked['allow']) if locked else normalize_links(links)
         state = {'id': uuid.uuid4().hex, 'end': now + minutes * 60, 'allow': allow}
         # Serialize the start with other processes; an active session cannot be overwritten.
         with self.store.connect() as db:

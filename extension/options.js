@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 async function status() {
-  const data = await chrome.storage.local.get(['connection', 'focus']);
-  $('connection').textContent = data.connection || '尚未连接';
+  const data = await chrome.storage.local.get(['connection', 'focus', 'activityStatus']);
+  $('connection').textContent = (data.connection || '尚未连接') + ' · ' + (data.activityStatus || '尚未收到计时上报结果');
   const active = data.focus?.end > Date.now() / 1000;
   $('save').disabled = active;
   $('token').disabled = active;
@@ -43,7 +43,7 @@ async function extract(collection) {
     const clean = [...new Set(ids.filter(value => /^BV[A-Za-z0-9]{10}$/.test(value)))];
     if (!clean.length) throw new Error('未能读取合集成员，请手动添加各集视频链接。');
     $('output').value = clean.join('\n');
-    $('result').textContent = `${season?.title || payload.data.title} · ${clean.length} 个视频。请核对后复制。`;
+    $('result').textContent = `${season?.title || payload.data.title} · ${clean.length} 个视频。请核对后加入。`;
   } catch (error) {
     $('result').textContent = error.message || String(error);
   }
@@ -51,9 +51,19 @@ async function extract(collection) {
 $('single').onclick = () => extract(false);
 $('collection').onclick = () => extract(true);
 $('copy').onclick = async () => {
-  if (!$('output').value) return;
-  try {await navigator.clipboard.writeText($('output').value); $('result').textContent = '已复制，请粘贴到桌面助手的允许列表。';}
-  catch {$('output').select(); $('result').textContent = '请按 Ctrl+C 复制选中的列表。';}
+  const videos = $('output').value.split('\n').map(line => line.trim()).filter(Boolean);
+  if (!videos.length) {
+    $('result').textContent = '请先提取视频，再推送。';
+    return;
+  }
+  $('result').textContent = '正在推送到桌面助手…';
+  try {
+    const data = await chrome.runtime.sendMessage({type: 'allow', videos});
+    if (!data?.ok) throw new Error(data?.error || '推送失败。');
+    $('result').textContent = data.added ? `已加入允许列表，共 ${data.total} 个视频。` : '这些视频已全部在允许列表中。';
+  } catch (error) {
+    $('result').textContent = error.message || String(error);
+  }
 };
 status();
 setInterval(status, 2000);

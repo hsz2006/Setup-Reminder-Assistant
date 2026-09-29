@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "启动助手 · B站专注",
-  "version": "1.0.0",
-  "description": "与本机启动助手连接，仅在主动专注期间允许事先选择的 B 站视频。",
+  "version": "1.2.0",
+  "description": "与本机启动助手连接，支持专注限制和 B 站停留计时锁定。",
   "permissions": ["storage", "alarms", "tabs", "scripting", "declarativeNetRequest"],
   "host_permissions": ["http://127.0.0.1/*", "*://*.bilibili.com/*", "*://bilibili.com/*", "*://b23.tv/*"],
   "background": {"service_worker": "background.js"},
